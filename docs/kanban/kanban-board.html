@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Másquetú – Kanban board design reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400..800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+/* ---------- Design tokens ---------- */
+:root{
+  --font-ui: "Manrope", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --ink: #121212;          /* titles, values */
+  --ink-2: #3A3835;        /* column headers */
+  --muted: #55524E;        /* company, meta, normal due text */
+  --overdue: #B4500F;      /* due today / overdue (AA on white) */
+  --accent: #FF8A2B;       /* brand accent: buttons, highlights (never as text on white) */
+
+  --board-bg: #FFFFFF;
+  --column-bg: #F3F3F2;
+  --card-bg: #FFFFFF;
+  --line: #E4E4E2;
+
+  --radius-board: 14px;
+  --radius-column: 10px;
+  --radius-card: 8px;
+  --gap: 12px;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:32px;background:#0E0D0C;font-family:var(--font-ui);color:var(--ink)}
+.page{max-width:1140px;margin:0 auto;display:flex;flex-direction:column;gap:40px}
+.label{font-family:var(--font-mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#B8B0A8;margin:0 0 10px}
+
+/* ---------- Board ---------- */
+.board{background:var(--board-bg);border:1px solid var(--line);border-radius:var(--radius-board);padding:20px;box-shadow:0 40px 80px -30px rgba(0,0,0,.5)}
+.board-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}
+.board-title{margin:0;font-weight:700;font-size:17px}
+.board-meta{margin:0;font-family:var(--font-mono);font-size:13px;color:var(--muted)}
+.columns{display:grid;grid-template-columns:repeat(4,minmax(200px,1fr));gap:var(--gap);overflow-x:auto}
+.column{background:var(--column-bg);border-radius:var(--radius-column);padding:12px;display:flex;flex-direction:column;gap:10px}
+.column-head{display:flex;justify-content:space-between;font-size:13px;font-weight:700;color:var(--ink-2)}
+.column-head .sum{font-family:var(--font-mono);font-weight:500}
+
+/* ---------- Deal card ---------- */
+.card{background:var(--card-bg);border:1px solid var(--line);border-radius:var(--radius-card);padding:12px;display:flex;flex-direction:column;gap:6px;cursor:grab}
+.card:hover{border-color:#A8A39D}
+.card-title{margin:0;font-weight:600;font-size:14px}
+.card-company{margin:0;font-size:13px;color:var(--muted)}
+.card-foot{display:flex;justify-content:space-between;align-items:baseline;font-size:12px}
+.card-value{font-family:var(--font-mono)}
+.card-next{color:var(--muted)}
+.card-next.is-due{color:var(--overdue)}
+
+/* Phone: two columns visible, swipe sideways for the rest */
+.board.mobile{max-width:375px;padding:12px}
+.board.mobile .board-meta{font-size:11px}
+.board.mobile .columns{grid-template-columns:repeat(4,calc((100% - var(--gap))/2));scroll-snap-type:x mandatory}
+.board.mobile .column{scroll-snap-align:start}
+</style>
+</head>
+<body>
+<div class="page">
+
+<section>
+<p class="label">Desktop · 4 columns</p>
+<div class="board" id="board-desktop">
+  <div class="board-head"><p class="board-title">Deals · Q4 pipeline</p><p class="board-meta">Open value €48,300 · 14 deals</p></div>
+  <div class="columns">
+    <div class="column"><div class="column-head"><span>Lead</span><span class="sum">€14.2k</span></div>
+      <article class="card"><p class="card-title">Website retainer</p><p class="card-company">Ferreira Bakery</p><div class="card-foot"><span class="card-value">€1,200</span><span class="card-next is-due">Call · Today</span></div></article>
+      <article class="card"><p class="card-title">Fleet tablets</p><p class="card-company">Nordvik Couriers</p><div class="card-foot"><span class="card-value">€9,800</span><span class="card-next">Email · Fri</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Qualified</span><span class="sum">€18.6k</span></div>
+      <article class="card"><p class="card-title">Annual licences</p><p class="card-company">Atelier Moreau</p><div class="card-foot"><span class="card-value">€6,400</span><span class="card-next">Demo · Mon</span></div></article>
+      <article class="card"><p class="card-title">Event package</p><p class="card-company">Casa Lumen</p><div class="card-foot"><span class="card-value">€3,900</span><span class="card-next is-due">Overdue 2d</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Proposal</span><span class="sum">€11.0k</span></div>
+      <article class="card"><p class="card-title">Pilot, 5 seats</p><p class="card-company">Brightwell Dental</p><div class="card-foot"><span class="card-value">€4,500</span><span class="card-next">Quote · Wed</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Won</span><span class="sum">€4.5k</span></div>
+      <article class="card"><p class="card-title">Renewal</p><p class="card-company">Kovač &amp; Sons</p><div class="card-foot"><span class="card-value">€4,500</span><span class="card-next">Closed</span></div></article>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<p class="label">Phone · 2 columns visible, swipe for more</p>
+<div class="board mobile" id="board-mobile">
+  <div class="board-head"><p class="board-title">Deals · Q4 pipeline</p><p class="board-meta">€48,300 · 14 deals</p></div>
+  <div class="columns">
+    <div class="column"><div class="column-head"><span>Lead</span><span class="sum">€14.2k</span></div>
+      <article class="card"><p class="card-title">Website retainer</p><p class="card-company">Ferreira Bakery</p><div class="card-foot"><span class="card-value">€1,200</span><span class="card-next is-due">Call · Today</span></div></article>
+      <article class="card"><p class="card-title">Fleet tablets</p><p class="card-company">Nordvik Couriers</p><div class="card-foot"><span class="card-value">€9,800</span><span class="card-next">Email · Fri</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Qualified</span><span class="sum">€18.6k</span></div>
+      <article class="card"><p class="card-title">Annual licences</p><p class="card-company">Atelier Moreau</p><div class="card-foot"><span class="card-value">€6,400</span><span class="card-next">Demo · Mon</span></div></article>
+      <article class="card"><p class="card-title">Event package</p><p class="card-company">Casa Lumen</p><div class="card-foot"><span class="card-value">€3,900</span><span class="card-next is-due">Overdue 2d</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Proposal</span><span class="sum">€11.0k</span></div>
+      <article class="card"><p class="card-title">Pilot, 5 seats</p><p class="card-company">Brightwell Dental</p><div class="card-foot"><span class="card-value">€4,500</span><span class="card-next">Quote · Wed</span></div></article>
+    </div>
+    <div class="column"><div class="column-head"><span>Won</span><span class="sum">€4.5k</span></div>
+      <article class="card"><p class="card-title">Renewal</p><p class="card-company">Kovač &amp; Sons</p><div class="card-foot"><span class="card-value">€4,500</span><span class="card-next">Closed</span></div></article>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<p class="label">Single deal card</p>
+<div style="background:var(--column-bg);border-radius:var(--radius-column);padding:16px;width:260px" id="card-single">
+  <article class="card"><p class="card-title">Website retainer</p><p class="card-company">Ferreira Bakery</p><div class="card-foot"><span class="card-value">€1,200</span><span class="card-next is-due">Call · Today</span></div></article>
+</div>
+</section>
+
+</div>
+</body>
+</html>

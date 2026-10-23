@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?M=C3=A1squet=C3=BA?= <hello@masquetu.ai>
+Date: Tue, 13 Oct 2026 18:58:59 +0300
+Subject: [PATCH 1/2] Frontend extensions: load app-provided modules before
+ mount
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Apps list ES modules in window.crm_extensions (via the page's boot data).
+Each is imported before the app mounts and given a small, versioned API:
+register(point, component, { doctype }), the host's Vue and a curated set
+of frappe-ui components, and services such as the doctype dialog.
+
+Modified by Másquetú, 2026-10-13.
+---
+ frontend/src/extensions.js | 102 +++++++++++++++++++++++++++++++++++++
+ frontend/src/main.js       |   5 +-
+ 2 files changed, 105 insertions(+), 2 deletions(-)
+ create mode 100644 frontend/src/extensions.js
+
+diff --git a/frontend/src/extensions.js b/frontend/src/extensions.js
+new file mode 100644
+index 0000000..2e22ce8
+--- /dev/null
++++ b/frontend/src/extensions.js
+@@ -0,0 +1,102 @@
++// Frontend extensions: lets installed Frappe apps add UI to the CRM without
++// changing its source.
++//
++// Loading: the server lists extension modules in `window.crm_extensions`
++// (an array of URLs, put into the page's boot data by an app's
++// `update_website_context` hook). Before the app mounts, each module is
++// imported and its default export is called with the extension API below.
++// A module that fails or takes too long is skipped; the CRM still starts.
++//
++//   export default function setup(api) {
++//     if (api.version !== 1) return
++//     api.register('kanban.card', MyCard, { doctype: 'CRM Deal' })
++//   }
++//
++// Extension points (props each registered component receives):
++//
++//   kanban.board-head    { board }                   above the columns
++//   kanban.column-meta   { board, column }           in each column header
++//   kanban.card          { board, column, item }     replaces the card body
++//
++//   board:  { doctype, columnField, filters, defaultFilters,
++//             columns: [{ name, count, allCount, items: [name, ...] }] }
++//   column: { name, count, allCount }  (for kanban.card: the column name)
++//   item:   the card's record as loaded for the board
++//
++// Extensions must use `api.vue` and `api.ui` rather than bundling their own
++// copies, so they share the CRM's Vue instance and components.
++import * as vue from 'vue'
++import {
++  Avatar,
++  Badge,
++  Button,
++  Dropdown,
++  Tooltip,
++  call,
++  createResource,
++  dayjs,
++  dayjsLocal,
++} from 'frappe-ui'
++import { useDoctypeModal } from '@/composables/doctypeModal'
++
++const API_VERSION = 1
++const LOAD_TIMEOUT_MS = 5000
++
++const registry = vue.shallowReactive({})
++
++function key(point, doctype) {
++  return `${point}:${doctype || '*'}`
++}
++
++export function registerExtension(point, component, { doctype } = {}) {
++  registry[key(point, doctype)] = vue.markRaw(component)
++}
++
++// The component registered for this point and doctype, else for all doctypes, else null.
++export function resolveExtension(point, doctype) {
++  return registry[key(point, doctype)] || registry[key(point)] || null
++}
++
++const api = Object.freeze({
++  version: API_VERSION,
++  register: registerExtension,
++  vue,
++  ui: Object.freeze({
++    Avatar,
++    Badge,
++    Button,
++    Dropdown,
++    Tooltip,
++    call,
++    createResource,
++    dayjs,
++    dayjsLocal,
++  }),
++  services: Object.freeze({
++    // Open the CRM's create/edit dialog for a doctype, e.g. a note on a deal.
++    showModal: (options) => useDoctypeModal().showModal(options),
++    translate: (...args) => window.__(...args),
++  }),
++})
++
++function withTimeout(promise, ms, url) {
++  return Promise.race([
++    promise,
++    new Promise((_, reject) =>
++      setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms),
++    ),
++  ]).catch((error) => console.error(`[crm extensions] ${url}:`, error))
++}
++
++export function loadExtensions() {
++  const urls = Array.isArray(window.crm_extensions) ? window.crm_extensions : []
++  return Promise.all(
++    urls.map((url) =>
++      withTimeout(
++        import(/* @vite-ignore */ url).then((module) => module.default?.(api)),
++        LOAD_TIMEOUT_MS,
++        url,
++      ),
++    ),
++  )
++}
+diff --git a/frontend/src/main.js b/frontend/src/main.js
+index 5d44402..103c4eb 100644
+--- a/frontend/src/main.js
++++ b/frontend/src/main.js
+@@ -7,6 +7,7 @@ import { initSocket } from './socket'
+ import router from './router'
+ import translationPlugin from './translation'
+ import App from './App.vue'
++import { loadExtensions } from './extensions'
+ 
+ import {
+   FrappeUI,
+@@ -67,13 +68,13 @@ if (import.meta.env.DEV) {
+       }
+       socket = initSocket()
+       app.config.globalProperties.$socket = socket
+-      app.mount('#app')
++      loadExtensions().finally(() => app.mount('#app'))
+     },
+   )
+ } else {
+   socket = initSocket()
+   app.config.globalProperties.$socket = socket
+-  app.mount('#app')
++  loadExtensions().finally(() => app.mount('#app'))
+ }
+ 
+ if (import.meta.env.DEV) {

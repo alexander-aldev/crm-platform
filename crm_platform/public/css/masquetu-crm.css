@@ -1,0 +1,474 @@
+/* =====================================================================
+   Másquetú theme for Frappe CRM
+   Source of truth: the Másquetú design system and docs/kanban/
+   (kanban-board.html). Added to the page by the Másquetú extension
+   (public/js/masquetu.js). The board shell is targeted through the CRM's
+   data-part attributes (crm-patches/0002); the deal card, column totals and
+   board header are rendered by the extension with mq-* classes.
+
+   Both themes get the fonts, the flame accent and the board layout. Colours
+   come from --mq-* tokens: the kit's values in light mode, frappe-ui's own
+   dark variables in dark mode. The warm-grey remap of frappe-ui's light
+   palette (_tokens.generated.css) is light-only.
+
+   Rules are prefixed with `html:root` (specificity 0,1,1) so they beat the
+   Tailwind utilities left on the same elements, including hover variants,
+   whatever order the stylesheets load in.
+   ===================================================================== */
+
+@import url("./_tokens.generated.css");
+
+/* ---------- Fonts (Google Fonts CDN, same URL as docs/kanban/kanban-board.html) ---------- */
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400..800&family=JetBrains+Mono:wght@500&display=swap");
+
+/* ---------- Másquetú tokens (same names as the design kit) ---------- */
+:root {
+  --mq-font: "Manrope", system-ui, sans-serif;
+  --mq-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --mq-flame: #FF8A2B;
+  --mq-flame-hover: #F27C1D;   /* derived: the kit's white hover is for dark backgrounds */
+  --mq-flame-active: #E06E12;  /* derived */
+  --mq-on-flame: #121212;      /* text on flame is never white */
+
+  --mq-radius-sm: 8px;
+  --mq-radius-column: 10px;
+  --mq-radius-md: 14px;
+
+  /* Board colours: light values from kanban/README.md */
+  --mq-board-bg: #FFFFFF;
+  --mq-column-bg: #F3F3F2;
+  --mq-card-bg: #FFFFFF;
+  --mq-line: #E4E4E2;
+  --mq-line-hover: #A8A39D;
+  --mq-ink: #121212;
+  --mq-ink-2: #3A3835;
+  --mq-muted: #55524E;
+  --mq-link: #B4500F;          /* --mq-flame-text: orange text that passes contrast on white */
+
+  /* Deal card activity state (docs/deal-card-activity-indicator.md §3.4):
+     stripes >= 3:1 and text >= 4.5:1 on white */
+  --mq-status-overdue: #D92D20;
+  --mq-status-overdue-text: #B42318;
+  --mq-status-today: #16A34A;
+  --mq-status-today-text: #15803D;
+  --mq-status-none: #C28B00;   /* yellow amber, so it doesn't read as flame */
+  --mq-status-none-text: #92600A;
+}
+/* Dark mode: frappe-ui's dark surfaces and inks, the kit's orange for dark backgrounds */
+html:root[data-theme="dark"] {
+  --mq-board-bg: var(--surface-base);
+  --mq-column-bg: var(--surface-gray-1);
+  --mq-card-bg: var(--surface-gray-2);
+  --mq-line: var(--outline-gray-1);
+  --mq-line-hover: var(--outline-gray-3);
+  --mq-ink: var(--ink-gray-9);
+  --mq-ink-2: var(--ink-gray-7);
+  --mq-muted: var(--ink-gray-5);
+  --mq-link: #FF9F55;          /* --mq-flame-on-dark */
+
+  --mq-status-overdue: #FF6369;
+  --mq-status-overdue-text: #FF6369;
+  --mq-status-today: #3DD68C;
+  --mq-status-today-text: #3DD68C;
+  --mq-status-none: #FFB224;
+  --mq-status-none-text: #FFB224;
+}
+
+/* ---------- Type: Manrope for the whole app ---------- */
+/* frappe-ui sets `html { font-family: InterVar }` (everything else inherits it)
+   and Inter-only variation settings (opsz, cv11) on common elements. Replace the
+   font at the root only, so mono parts of the board still inherit theirs. */
+html:root {
+  font-family: var(--mq-font);
+}
+html:root :is(body, button, p, span, div) {
+  font-variation-settings: normal;
+}
+html:root :is(code, kbd, pre, samp) {
+  font-family: var(--mq-mono);
+}
+
+/* ---------- Accent ---------- */
+html:root {
+  --focus-outline-default: 2px solid var(--mq-flame);
+  --ink-blue-link: var(--mq-link);
+}
+
+/* Primary button: frappe-ui's solid gray Button is
+   `text-ink-base bg-surface-gray-10 hover:bg-surface-gray-9 active:bg-surface-gray-8`. */
+html:root button.bg-surface-gray-10 {
+  background-color: var(--mq-flame);
+  color: var(--mq-on-flame);
+  font-weight: 700;
+}
+html:root button.bg-surface-gray-10:hover { background-color: var(--mq-flame-hover); }
+html:root button.bg-surface-gray-10:active { background-color: var(--mq-flame-active); }
+html:root button.bg-surface-gray-10:disabled {
+  background-color: var(--surface-gray-2);
+  color: var(--ink-gray-4);
+}
+
+/* =====================================================================
+   Kanban board (kanban/README.md)
+   Shell: [data-part] attributes from the CRM (crm-patches/0002), next to its
+   Tailwind classes. Content: mq-* classes rendered by public/js/masquetu.js.
+   ===================================================================== */
+html:root {
+  [data-part="board"] {
+    background: var(--mq-board-bg);
+    border: 1px solid var(--mq-line);
+    border-radius: var(--mq-radius-md);
+    padding: 20px;
+    margin: 0 16px;
+    height: calc(100% - 16px);
+    box-sizing: border-box;
+    /* No drop shadow in the app: the kit's shadow is for the board on the dark homepage. */
+  }
+
+  .mq-board__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .mq-board__title {
+    margin: 0;
+    font-weight: 700;
+    font-size: 17px;
+    color: var(--mq-ink);
+  }
+  .mq-board__meta {
+    margin: 0 0 0 auto;
+    font-family: var(--mq-mono);
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--mq-muted);
+    white-space: nowrap;
+  }
+  .mq-board__meta-short { display: none; }
+
+  /* Columns share the width equally and never go below 280px (the kit says 200px,
+     but the deal card's footer needs 280px to stay on one line); past that the
+     board scrolls sideways. `width: 0` keeps long card text out of the
+     columns' intrinsic size, so content can't stretch a column. */
+  [data-part="columns"] {
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    flex: 1 0 0%;
+    min-width: min-content;
+  }
+  [data-part="column"] {
+    background: var(--mq-column-bg);
+    border-radius: var(--mq-radius-column);
+    padding: 12px;
+    gap: 10px;
+    flex: 1 1 0;
+    width: 0;
+    min-width: 280px;
+    box-sizing: border-box;
+  }
+  [data-part="column"]:hover { background: var(--mq-column-bg); }
+
+  [data-part="column-head"] {
+    min-height: 28px;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--mq-ink-2);
+  }
+  [data-part="column-title"] {
+    color: var(--mq-ink-2);
+    font-size: 13px;
+    font-weight: 700; /* its wrapper's text-base utility sets 400 */
+    line-height: 1.4;
+  }
+  /* The kit has no stage colour dot. The kanban column colour isn't used
+     anywhere else, so hiding its picker loses nothing. */
+  [data-part="column-color"] { display: none; }
+  .mq-column__sum {
+    font-family: var(--mq-mono);
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--mq-ink-2);
+    white-space: nowrap;
+  }
+  [data-part="cards"] { gap: 10px; }
+
+  /* ---------- Card shell (every board: deals, leads, tasks) ---------- */
+  [data-part="card"] {
+    position: relative;
+    background: var(--mq-card-bg);
+    border: 1px solid var(--mq-line);
+    border-radius: var(--mq-radius-sm);
+    padding: 12px;
+    color: var(--mq-ink);
+    cursor: grab;
+    transition: border-color 0.15s;
+  }
+  [data-part="card"]:hover { border-color: var(--mq-line-hover); }
+  [data-part="card"]:active { cursor: grabbing; }
+  [data-part="card"]:focus-visible { outline: 2px solid var(--mq-flame); outline-offset: 1px; }
+
+  /* ---------- Deal card (docs/deal-card-activity-indicator.md) ---------- */
+  /* Left accent stripe for the activity state: the card's left border plus a
+     3px inset shadow, so it follows the card's radius. Every deal card gets 16px
+     on the left so text doesn't shift between states. */
+  [data-part="card"]:has(> .mq-deal) { padding-left: 16px; }
+  [data-part="card"]:has(> .mq-deal--overdue) { --mq-stripe: var(--mq-status-overdue); }
+  [data-part="card"]:has(> .mq-deal--today) { --mq-stripe: var(--mq-status-today); }
+  [data-part="card"]:has(> .mq-deal--none) { --mq-stripe: var(--mq-status-none); }
+  [data-part="card"]:has(> :is(.mq-deal--overdue, .mq-deal--today, .mq-deal--none)),
+  [data-part="card"]:has(> :is(.mq-deal--overdue, .mq-deal--today, .mq-deal--none)):hover {
+    border-left-color: var(--mq-stripe);
+    box-shadow: inset 3px 0 0 var(--mq-stripe);
+  }
+
+  .mq-deal {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    container-type: inline-size;
+  }
+  .mq-deal__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .mq-deal__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+  }
+  .mq-chip {
+    max-width: 100%;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--mq-column-bg);
+    color: var(--mq-ink-2);
+    font-family: var(--mq-mono);
+    font-weight: 500;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mq-deal__title {
+    margin: 0;
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1.35;
+    color: var(--mq-ink);
+    overflow-wrap: anywhere;
+  }
+  .mq-deal__contact {
+    margin: 0;
+    font-weight: 400;
+    font-size: 13px;
+    line-height: 1.35;
+    color: var(--mq-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mq-deal__foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .mq-avatar {
+    align-self: center;
+    flex-shrink: 0;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--mq-column-bg);
+    color: var(--mq-ink-2);
+    font-weight: 700;
+    font-size: 10px;
+    line-height: 1;
+  }
+  .mq-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .mq-deal__value {
+    font-family: var(--mq-mono);
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--mq-ink);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  /* Next activity: the "· when" part always shows; when it doesn't fit beside the
+     value it wraps to its own line. The task title has no intrinsic width
+     (contain: inline-size), so it never causes the wrap and only takes the room
+     that is left, truncated. */
+  .mq-deal__next {
+    display: flex;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    min-width: min-content;
+    max-width: 100%;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--mq-muted);
+    text-align: right;
+    white-space: nowrap;
+  }
+  button.mq-deal__next { cursor: pointer; }
+  button.mq-deal__next:hover .mq-next__title,
+  button.mq-deal__next:hover .mq-next__when { text-decoration: underline; }
+  button.mq-deal__next:focus-visible { outline: 2px solid var(--mq-flame); outline-offset: 2px; border-radius: 2px; }
+  .mq-next__title {
+    flex: 1 1 auto;
+    min-width: 4.5em; /* below this the activity wraps instead: "F… · overdue 2d" says nothing */
+    contain: inline-size;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+  }
+  /* Narrow cards can't fit 4.5em plus "· overdue 27d": 200px columns keep 2.5em,
+     phone cards let the title take whatever is left. */
+  @container (max-width: 180px) {
+    .mq-next__title { min-width: 2.5em; }
+  }
+  @container (max-width: 130px) {
+    .mq-next__title { min-width: 0; }
+  }
+  .mq-next__sep, .mq-next__when { flex-shrink: 0; white-space: pre; }
+  .mq-deal__next--overdue { color: var(--mq-status-overdue-text); }
+  .mq-deal__next--today { color: var(--mq-status-today-text); }
+  .mq-deal__next--none { color: var(--mq-status-none-text); }
+  /* The note/task menu sits in the card's corner without taking room from the
+     first row, as in the kit (which has no menu). */
+  .mq-deal__menu {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: var(--mq-card-bg);
+  }
+
+  /* ---------- Next-activity pop-up (teleported to <body>) ---------- */
+  .mq-pop {
+    position: fixed;
+    z-index: 50;
+    box-sizing: border-box;
+    width: min(280px, calc(100vw - 16px));
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background: var(--mq-card-bg);
+    border: 1px solid var(--mq-line);
+    border-radius: var(--mq-radius-sm);
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.25);
+    color: var(--mq-ink);
+    font-family: var(--mq-font);
+  }
+  .mq-pop:focus { outline: none; }
+  .mq-pop:focus-visible { outline: 2px solid var(--mq-flame); outline-offset: 1px; }
+  .mq-pop__title {
+    margin: 0;
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1.35;
+    color: var(--mq-ink);
+    overflow-wrap: anywhere;
+  }
+  .mq-pop__meta,
+  .mq-pop__desc {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--mq-muted);
+  }
+  .mq-pop__desc {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .mq-pop__action {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--mq-link);
+    cursor: pointer;
+  }
+  .mq-pop__action:hover { text-decoration: underline; }
+  .mq-pop__action:focus-visible { outline: 2px solid var(--mq-flame); outline-offset: 2px; border-radius: 2px; }
+}
+@media (hover: none) {
+  html:root .mq-deal__top > :first-child { padding-right: 24px; }
+}
+
+/* Column tools (menu, new deal) and the card's note/task menu appear on hover
+   or keyboard focus. Column tools collapse to zero width meanwhile, so the
+   stage total sits flush right as in the kit; they stay focusable. Touch
+   screens have no hover, so everything stays visible there. */
+@media (hover: hover) {
+  html:root {
+    [data-part="column-head"]:not(:hover):not(:focus-within) [data-part="column-action"] {
+      max-width: 0;
+      padding-inline: 0;
+      margin-inline: 0;
+      border-width: 0;
+      overflow: hidden;
+      opacity: 0;
+    }
+    .mq-deal__menu {
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    [data-part="card"]:hover .mq-deal__menu,
+    [data-part="card"]:focus-within .mq-deal__menu,
+    .mq-deal__menu[aria-expanded="true"] {
+      opacity: 1;
+    }
+  }
+}
+
+/* ---------- Phone: two columns fill the width, swipe for the rest ---------- */
+@media (max-width: 767px) {
+  html:root {
+    [data-part="board"] {
+      padding: 12px;
+      margin: 0 8px;
+      height: calc(100% - 8px);
+    }
+    .mq-board__meta { font-size: 11px; }
+    .mq-board__meta-full { display: none; }
+    .mq-board__meta-short { display: inline; }
+    [data-part="board-scroll"] { scroll-snap-type: x mandatory; }
+    /* As in the kit's phone board: no column tools or card menu. New deals come
+       from the header's Create button; notes and tasks from the deal page. */
+    [data-part="column-action"],
+    .mq-deal__menu { display: none; }
+    .mq-deal__top > :first-child { padding-right: 0; }
+    /* 100vw minus board margin (2 x 8), padding (2 x 12), border (2 x 1) and one 12px gap */
+    [data-part="column"] {
+      flex: 0 0 auto;
+      width: calc((100vw - 42px - 12px) / 2);
+      min-width: 0;
+      scroll-snap-align: start;
+    }
+  }
+}
