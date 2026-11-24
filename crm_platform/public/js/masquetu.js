@@ -18,6 +18,7 @@ export default function setup(api) {
     return
   }
   addStylesheet()
+  forwardCardClicks()
   const fmt = makeFormatters({
     dayjsLocal: api.ui.dayjsLocal,
     translate: api.services.translate,
@@ -39,6 +40,34 @@ function addStylesheet() {
   link.href = href.toString()
   link.dataset.masquetu = ''
   document.head.appendChild(link)
+}
+
+// Every Kanban card is covered by a link to its record (`[data-part="card"] > a`).
+// Vivaldi cancels a native drag that starts on a link, so no card could be
+// dragged there. The stylesheet makes that link ignore the mouse (it keeps
+// keyboard focus and Enter); this passes mouse clicks on the card on to it,
+// with their modifiers, so a click still opens the record and Cmd/Ctrl-click
+// a new tab. Buttons and links inside the card keep their own clicks.
+function forwardCardClicks() {
+  if (document.documentElement.dataset.masquetuCardClicks) return
+  document.documentElement.dataset.masquetuCardClicks = ''
+  const recordLink = (event) => {
+    if (event.defaultPrevented) return null
+    const target = event.target instanceof Element ? event.target : null
+    const card = target?.closest('[data-part="card"]')
+    if (!card || target.closest('a, button, input, select, textarea, label, [role="menuitem"]')) return null
+    return card.querySelector(':scope > a[href]')
+  }
+  document.addEventListener('click', (event) => {
+    const link = recordLink(event)
+    if (!link || event.button !== 0) return
+    const { ctrlKey, metaKey, shiftKey, altKey } = event
+    link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0, ctrlKey, metaKey, shiftKey, altKey }))
+  })
+  document.addEventListener('auxclick', (event) => {
+    const link = event.button === 1 && recordLink(event)
+    if (link) window.open(link.href, '_blank', 'noopener')
+  })
 }
 
 // ---------- Board data: totals and per-card data (crm_platform.api.kanban) ----------

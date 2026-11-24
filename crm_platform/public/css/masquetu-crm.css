@@ -210,10 +210,16 @@ html:root {
   }
   [data-part="card"]:hover { border-color: var(--mq-line-hover); }
   [data-part="card"]:active { cursor: grabbing; }
+  /* A column drags by its header (or its empty space, which keeps the arrow). */
+  [data-part="column-head"] { cursor: grab; }
+  [data-part="column-head"]:active { cursor: grabbing; }
   /* Since CRM v16 the card is a div and the link to the record is an overlay
      (`> a`, inset 0) beneath the content: keep it in the card's shape and cursor,
      and draw the focus ring on the card. */
-  [data-part="card"] > a { border-radius: inherit; cursor: inherit; }
+  /* Vivaldi cancels a drag that starts on a link, so the overlay ignores the mouse
+     and the drag starts on the card. masquetu.js forwardCardClicks() passes clicks
+     on the card on to this link; it still takes keyboard focus and Enter. */
+  [data-part="card"] > a { border-radius: inherit; cursor: inherit; pointer-events: none; }
   [data-part="card"] > a:focus-visible { box-shadow: none; }
   [data-part="card"]:focus-visible,
   [data-part="card"]:has(> a:focus-visible) { outline: 2px solid var(--mq-flame); outline-offset: 1px; }
