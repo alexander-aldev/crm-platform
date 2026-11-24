@@ -12,13 +12,17 @@ extension the board renders exactly as before. Stable data-part attributes
 (board, columns, column, column-head, column-title, cards, card, ...) give
 themes something to target other than utility classes.
 
-Modified by Másquetú, 2026-10-13.
+A kanban.card component replaces the card body and sits above the card's
+link overlay: clicks on it fall through to the link, except on buttons,
+links and tooltip triggers, which stay interactive.
+
+Modified by Másquetú, 2026-10-13; rebased onto v16.0.4 2026-11-19.
 ---
- frontend/src/components/Kanban/KanbanView.vue | 68 +++++++++++++++++--
- 1 file changed, 63 insertions(+), 5 deletions(-)
+ frontend/src/components/Kanban/KanbanView.vue | 72 +++++++++++++++++--
+ 1 file changed, 67 insertions(+), 5 deletions(-)
 
 diff --git a/frontend/src/components/Kanban/KanbanView.vue b/frontend/src/components/Kanban/KanbanView.vue
-index 0e1b8ce..0b1d7b1 100644
+index baa80c0..ff9f68a 100644
 --- a/frontend/src/components/Kanban/KanbanView.vue
 +++ b/frontend/src/components/Kanban/KanbanView.vue
 @@ -1,23 +1,30 @@
@@ -42,20 +46,20 @@ index 0e1b8ce..0b1d7b1 100644
          <div
            v-if="!column.column.delete"
 +          data-part="column"
-           class="flex flex-col gap-2.5 min-w-72 w-72 hover:bg-surface-gray-2 rounded-lg p-2.5"
+           class="flex flex-col gap-2.5 min-w-72 w-72 hover:bg-surface-gray-2 rounded-6 p-2.5"
          >
 -          <div class="flex gap-2 items-center group justify-between">
 -            <div class="flex items-center text-base">
 +          <div data-part="column-head" class="flex gap-2 items-center group justify-between">
 +            <div class="flex items-center text-base min-w-0">
-               <Popover>
-                 <template #target="{ togglePopover }">
+               <Popover bare>
+                 <template #trigger>
                    <Button
 +                    data-part="column-color"
                      variant="ghost"
                      size="sm"
                      class="hover:!bg-surface-gray-2"
-@@ -50,12 +57,19 @@
+@@ -49,12 +56,19 @@
                    </div>
                  </template>
                </Popover>
@@ -77,7 +81,7 @@ index 0e1b8ce..0b1d7b1 100644
                      class="opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity"
                      icon="lucide-more-horizontal"
                      variant="ghost"
-@@ -63,6 +77,7 @@
+@@ -62,6 +76,7 @@
                  </template>
                </Dropdown>
                <Button
@@ -85,7 +89,7 @@ index 0e1b8ce..0b1d7b1 100644
                  icon="lucide-plus"
                  variant="ghost"
                  @click="options.onNewClick(column)"
-@@ -74,6 +89,7 @@
+@@ -73,6 +88,7 @@
                :list="column.data"
                group="fields"
                item-key="name"
@@ -93,38 +97,42 @@ index 0e1b8ce..0b1d7b1 100644
                class="flex flex-col gap-3.5 flex-1"
                :delay="isTouchScreenDevice() ? 200 : 0"
                :data-column="column.column.name"
-@@ -82,6 +98,7 @@
+@@ -80,6 +96,7 @@
+             >
                <template #item="{ element: fields }">
-                 <component
-                   :is="options.getRoute ? 'router-link' : 'div'"
+                 <div
 +                  data-part="card"
-                   class="pt-3 px-3.5 pb-2.5 rounded-lg border bg-surface-base text-base flex flex-col text-ink-gray-9"
+                   class="relative pt-3 px-3.5 pb-2.5 rounded-6 border bg-surface-base text-base flex flex-col text-ink-gray-9"
                    :data-name="fields.name"
-                   v-bind="{
-@@ -91,6 +108,14 @@
-                       : undefined,
-                   }"
-                 >
+                   @click="options.onClick && options.onClick(fields)"
+@@ -91,6 +108,18 @@
+                     class="absolute inset-0 rounded-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-outline-gray-4"
+                     :aria-label="fields[titleField] || __('No Title')"
+                   />
++                  <!-- kanban.card replaces everything below. Its root sits above the link
++                       overlay but lets clicks fall through, except on buttons, links and
++                       tooltip triggers -->
 +                  <component
 +                    :is="ext.card"
 +                    v-if="ext.card"
++                    class="relative pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto [&_[data-slot=trigger]]:pointer-events-auto"
 +                    :board="board"
 +                    :column="column.column.name"
 +                    :item="fields"
 +                  />
 +                  <template v-else>
-                   <slot
-                     name="title"
-                     v-bind="{ fields, titleField, itemName: fields.name }"
-@@ -133,6 +158,7 @@
-                       />
-                     </div>
-                   </slot>
+                   <!-- clicks fall through to the card link; only tooltip triggers take hover -->
+                   <div
+                     class="relative pointer-events-none [&_[data-slot=trigger]]:pointer-events-auto"
+@@ -144,6 +173,7 @@
+                       </div>
+                     </slot>
+                   </div>
 +                  </template>
-                 </component>
+                 </div>
                </template>
              </Draggable>
-@@ -174,11 +200,13 @@
+@@ -185,11 +215,13 @@
        </Combobox>
      </div>
    </div>
@@ -138,7 +146,7 @@ index 0e1b8ce..0b1d7b1 100644
  import Draggable from 'vuedraggable'
  import { Combobox, Dropdown, Popover } from 'frappe-ui'
  import { computed } from 'vue'
-@@ -198,6 +226,36 @@ const emit = defineEmits(['update', 'loadMore'])
+@@ -209,6 +241,36 @@ const emit = defineEmits(['update', 'loadMore'])
  
  const kanban = defineModel({ type: Object })
  

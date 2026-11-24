@@ -128,7 +128,7 @@ index 0000000..2e22ce8
 +  )
 +}
 diff --git a/frontend/src/main.js b/frontend/src/main.js
-index 5d44402..103c4eb 100644
+index ead62cb..1cc63b7 100644
 --- a/frontend/src/main.js
 +++ b/frontend/src/main.js
 @@ -7,6 +7,7 @@ import { initSocket } from './socket'
@@ -139,7 +139,7 @@ index 5d44402..103c4eb 100644
  
  import {
    FrappeUI,
-@@ -67,13 +68,13 @@ if (import.meta.env.DEV) {
+@@ -63,13 +64,13 @@ if (import.meta.env.DEV) {
        }
        socket = initSocket()
        app.config.globalProperties.$socket = socket

@@ -210,7 +210,13 @@ html:root {
   }
   [data-part="card"]:hover { border-color: var(--mq-line-hover); }
   [data-part="card"]:active { cursor: grabbing; }
-  [data-part="card"]:focus-visible { outline: 2px solid var(--mq-flame); outline-offset: 1px; }
+  /* Since CRM v16 the card is a div and the link to the record is an overlay
+     (`> a`, inset 0) beneath the content: keep it in the card's shape and cursor,
+     and draw the focus ring on the card. */
+  [data-part="card"] > a { border-radius: inherit; cursor: inherit; }
+  [data-part="card"] > a:focus-visible { box-shadow: none; }
+  [data-part="card"]:focus-visible,
+  [data-part="card"]:has(> a:focus-visible) { outline: 2px solid var(--mq-flame); outline-offset: 1px; }
 
   /* ---------- Deal card (docs/deal-card-activity-indicator.md) ---------- */
   /* Left accent stripe for the activity state: the card's left border plus a

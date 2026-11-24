@@ -48,7 +48,7 @@ CRM_FRONTEND=<bench>/apps/crm/frontend node --test crm_platform/tests/js/*.test.
 
 ```bash
 python3 scripts/gen_theme_tokens.py \
-    <bench>/apps/crm/frontend/node_modules/frappe-ui/tailwind/generated/colors.json
+    <bench>/apps/crm/frontend/node_modules/frappe-ui/tailwind/tokens/colors.js
 ```
 
 ## Licence

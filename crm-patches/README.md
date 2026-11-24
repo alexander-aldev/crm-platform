@@ -2,7 +2,7 @@
 
 These patches are the only changes we make to `apps/crm`. They add a **generic extension interface** to the CRM frontend and nothing Másquetú-specific. All Másquetú code (theme, deal card, column totals, board header) is in `crm_platform` and plugs into named extension points. The patches are written so they could go to `frappe/crm` upstream; once accepted, nothing is patched any more.
 
-The patches live in one directory per upstream release, `crm-patches/<tag>/` (now `v1.84.0`); the directory name is the tag they target. To apply a set to a checkout of `frappe/crm` at that tag:
+The patches live in one directory per upstream release, `crm-patches/<tag>/` (now only `v16.0.4`, on Frappe v16); the directory name is the tag they target. To apply a set to a checkout of `frappe/crm` at that tag:
 
 ```bash
 cd apps/crm
@@ -43,7 +43,7 @@ Why patch at all: the CRM frontend is a standalone Vue SPA with no plugin mechan
 |---|---|---|
 | `kanban.board-head` | Above the columns | `board` |
 | `kanban.column-meta` | In each column header, before the column tools | `board`, `column: { name, count, allCount }` |
-| `kanban.card` | Replaces the card body; the card stays a link to the record and stays draggable | `board`, `column` (name), `item` (the record as loaded for the board) |
+| `kanban.card` | Replaces the card body; the card stays a link to the record and stays draggable. Since v16.0.4 the link is an overlay under the body: clicks on the component fall through to it, except on buttons, links and tooltip triggers (`[data-slot=trigger]`) | `board`, `column` (name), `item` (the record as loaded for the board) |
 
 `board` is `{ doctype, columnField, filters, defaultFilters, columns: [{ name, count, allCount, items: [record names] }] }`, a new object whenever the board reloads.
 
@@ -71,6 +71,9 @@ What to re-check after a rebase:
 - `KanbanView.vue` still gets `params.doctype`, `params.filters`, `params.default_filters` and `data.column_field` from its model (the `board` object is built from them).
 - `useDoctypeModal().showModal` and the frappe-ui exports listed above still exist.
 - frappe-ui: if it was bumped, re-run `scripts/gen_theme_tokens.py`, and check that the solid button is still `bg-surface-gray-10` (see the primary-button rule in `masquetu-crm.css`).
+- The card's markup: `masquetu-crm.css` styles `[data-part="card"]`, its `> a` link overlay and the `kanban.card` root as a direct child (`:has(> .mq-deal)`).
+
+From CRM v16 the frontend imports Frappe's own UI source (`@framework/ui`, resolved to `../../frappe/ui/src`), so a plain clone of `frappe/crm` only builds with a `frappe/frappe` checkout of the matching v16 release beside it (`<dir>/crm`, `<dir>/frappe`), as in a bench's `apps/`.
 
 ## Testing a change
 

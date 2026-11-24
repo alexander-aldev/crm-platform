@@ -136,10 +136,14 @@ function dealCard({ vue, ui, services }, store, fmt) {
 
   const NextActivity = nextActivity({ vue, services }, store, fmt, addTo)
 
+  // Since CRM v16 the card body lets pointer events through to the card link
+  // beneath it, except on buttons, links and `[data-slot=trigger]`: mark the
+  // elements with a tooltip as triggers so hovering still shows it.
   function chip(c) {
     return h('span', {
       class: ['mq-chip', `mq-chip--${c.kind}`],
       title: c.tooltip || undefined,
+      'data-slot': c.tooltip ? 'trigger' : undefined,
     }, c.text)
   }
 
@@ -147,6 +151,7 @@ function dealCard({ vue, ui, services }, store, fmt) {
     return h('span', {
       class: 'mq-avatar',
       title: owner.full_name,
+      'data-slot': 'trigger',
       role: 'img',
       'aria-label': owner.full_name,
     }, owner.image
