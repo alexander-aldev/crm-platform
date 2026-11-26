@@ -120,8 +120,12 @@ html:root {
     border: 1px solid var(--mq-line);
     border-radius: var(--mq-radius-md);
     padding: 20px;
-    margin: 0 16px;
-    height: calc(100% - 16px);
+    margin: 0 16px 16px;
+    /* Fills what is left under the page header, so the sideways scrollbar at the
+       board's bottom edge is on screen without scrolling the page. */
+    flex: 1 1 0;
+    height: auto;
+    min-height: 360px;
     box-sizing: border-box;
     /* No drop shadow in the app: the kit's shadow is for the board on the dark homepage. */
   }
@@ -463,8 +467,7 @@ html:root {
   html:root {
     [data-part="board"] {
       padding: 12px;
-      margin: 0 8px;
-      height: calc(100% - 8px);
+      margin: 0 8px 8px;
     }
     .mq-board__meta { font-size: 11px; }
     .mq-board__meta-full { display: none; }
