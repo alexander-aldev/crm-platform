@@ -1,0 +1,790 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?M=C3=A1squet=C3=BA?= <hello@masquetu.ai>
+Date: Thu, 26 Nov 2026 14:00:00 +0200
+Subject: [PATCH 4/4] Task status change: ask for a note, with a title filled
+ in
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Changing a task's status (the status menu on a lead or deal, dragging a card
+on the Tasks board, or editing the task) opens a dialog asking for a note
+about the change. The note can be skipped; cancelling leaves the status as it
+was. The title is filled in from the change ("Done: Follow up · 7d late",
+"Reopened: ...", "Started: ...") so notes read by outcome in the Notes list.
+
+Once the note has some text, an app can suggest a better title through the
+crm_task_note_title server hook (crm.api.task.suggest_note_title). It is
+requested a second after typing stops, only replaces a title the person has
+not edited, and falls back to the filled-in one when there is no hook, an
+error, or a slow answer.
+
+- utils/taskNoteTitle.js: the pure title formula
+- TaskStatusNoteModal and promptTaskStatusNote(): the dialog and a promise
+  for it; the task dialog shows its own copy, nested, to share its focus
+- AllModals, ViewControls and DoctypeModal: the three places a status changes
+- TextEditorControl: also emits `input` on every edit
+
+Modified by Másquetú, 2026-11-26.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../src/components/Activities/AllModals.vue   |  30 ++-
+ .../src/components/Activities/TaskNotes.vue   |  51 +++-
+ .../components/Controls/TextEditorControl.vue |   4 +-
+ .../src/components/Modals/DoctypeModal.vue    |  52 +++-
+ .../src/components/Modals/GlobalModals.vue    |   2 +
+ .../Modals/TaskStatusNoteContainer.vue        |  15 ++
+ .../components/Modals/TaskStatusNoteModal.vue | 249 ++++++++++++++++++
+ frontend/src/components/ViewControls.vue      |  35 +++
+ frontend/src/composables/taskStatusNote.js    |  39 +++
+ frontend/src/utils/taskNoteTitle.js           |  78 ++++++
+ 10 files changed, 539 insertions(+), 16 deletions(-)
+ create mode 100644 frontend/src/components/Modals/TaskStatusNoteContainer.vue
+ create mode 100644 frontend/src/components/Modals/TaskStatusNoteModal.vue
+ create mode 100644 frontend/src/composables/taskStatusNote.js
+ create mode 100644 frontend/src/utils/taskNoteTitle.js
+
+diff --git a/frontend/src/components/Activities/AllModals.vue b/frontend/src/components/Activities/AllModals.vue
+index 039d549..5183ac5 100644
+--- a/frontend/src/components/Activities/AllModals.vue
++++ b/frontend/src/components/Activities/AllModals.vue
+@@ -5,7 +5,8 @@
+ import { useDoctypeModal } from '@/composables/doctypeModal'
+ import { useTelemetry } from '@framework/ui/telemetry'
+ import { useCrmOnboarding } from '@/composables/onboarding'
+-import { call } from 'frappe-ui'
++import { promptTaskStatusNote } from '@/composables/taskStatusNote'
++import { call, toast } from 'frappe-ui'
+ import { useRoute, useRouter } from 'vue-router'
+ 
+ const props = defineProps({
+@@ -44,15 +45,24 @@ async function deleteTask(name) {
+   activities.value.reload()
+ }
+ 
+-function updateTaskStatus(status, task) {
+-  call('frappe.client.set_value', {
+-    doctype: 'CRM Task',
+-    name: task.name,
+-    fieldname: 'status',
+-    value: status,
+-  }).then(() => {
+-    activities.value.reload()
+-  })
++// Changing a task's status asks for a note about it; the note can be skipped
++async function updateTaskStatus(status, task) {
++  if (status === task.status) return
++  const answer = await promptTaskStatusNote(task, task.status, status)
++  if (answer.action === 'cancel') return
++
++  const note = answer.action === 'save' ? answer.note : null
++  try {
++    await call('crm.api.task.set_status', { task: task.name, status, note })
++  } catch (e) {
++    toast.error(e.messages?.[0] || __('Could not change the status'))
++    return
++  }
++  if (note) {
++    completeStep('create_first_note')
++    capture('note_created')
++  }
++  activities.value.reload()
+ }
+ 
+ // Notes
+diff --git a/frontend/src/components/Activities/TaskNotes.vue b/frontend/src/components/Activities/TaskNotes.vue
+index 10e3f3e..a328124 100644
+--- a/frontend/src/components/Activities/TaskNotes.vue
++++ b/frontend/src/components/Activities/TaskNotes.vue
+@@ -12,16 +12,17 @@
+         variant="ghost"
+         icon-left="lucide-plus"
+         :label="__('Add note')"
+-        @click="adding = true"
++        @click="startAdding"
+       />
+     </div>
+ 
+     <div v-if="adding" class="mb-4 flex flex-col gap-2">
+       <FormControl
+-        v-model="title"
++        :modelValue="title"
+         type="text"
+         :placeholder="__('Title')"
+         autofocus
++        @update:modelValue="onTitleInput"
+       />
+       <TextEditorControl
+         :value="content"
+@@ -79,11 +80,16 @@ import TextEditorControl from '@/components/Controls/TextEditorControl.vue'
+ import TimelineTimestamp from '@/components/Activities/TimelineTimestamp.vue'
+ import { usersStore } from '@/stores/users'
+ import { sanitizeHTML } from '@/utils'
++import { taskNoteTitle } from '@/utils/taskNoteTitle'
+ import { Button, ErrorMessage, FormControl, call, createResource } from 'frappe-ui'
+-import { ref } from 'vue'
++import { onMounted, ref, watch } from 'vue'
+ 
+ const props = defineProps({
+   task: { type: [String, Number], required: true },
++  // the task as it is in the form, which may not be saved yet: a new note starts
++  // from the same title as the one asked for when its status changes
++  taskTitle: { type: String, default: '' },
++  status: { type: String, default: '' },
+ })
+ 
+ // the note is written on the task's lead or deal too, so refresh what that page shows
+@@ -99,12 +105,51 @@ const notes = createResource({
+ 
+ const adding = ref(false)
+ const title = ref('')
++// the title is ours until the person types in it
++const titleEdited = ref(false)
++let names = {}
+ const content = ref('')
+ const error = ref('')
+ const saving = ref(false)
+ 
++onMounted(async () => {
++  try {
++    names = (await call('crm.api.task.get_title_context', { task: props.task })) || {}
++    fillTitle()
++  } catch {
++    // the title without the deal and contact stays
++  }
++})
++
++function suggestedTitle() {
++  return taskNoteTitle({
++    task: { title: props.taskTitle },
++    to: props.status,
++    ...names,
++  })
++}
++
++function fillTitle() {
++  if (adding.value && !titleEdited.value) title.value = suggestedTitle()
++}
++
++// follows the status and title in the form until the person writes their own
++watch(() => [props.status, props.taskTitle], fillTitle)
++
++function startAdding() {
++  adding.value = true
++  titleEdited.value = false
++  fillTitle()
++}
++
++function onTitleInput(value) {
++  title.value = value
++  titleEdited.value = true
++}
++
+ function reset() {
+   adding.value = false
++  titleEdited.value = false
+   title.value = ''
+   content.value = ''
+   error.value = ''
+diff --git a/frontend/src/components/Controls/TextEditorControl.vue b/frontend/src/components/Controls/TextEditorControl.vue
+index 03b6885..cb6684c 100644
+--- a/frontend/src/components/Controls/TextEditorControl.vue
++++ b/frontend/src/components/Controls/TextEditorControl.vue
+@@ -56,7 +56,8 @@ const props = defineProps({
+   mentions: { type: Boolean, default: false },
+ })
+ 
+-const emit = defineEmits(['change'])
++// `change` comes when the editor loses focus, `input` on every edit
++const emit = defineEmits(['change', 'input'])
+ 
+ const editorClasses = computed(() => {
+   const defaultClass = 'max-h-[40vh] overflow-y-auto min-w-full'
+@@ -124,6 +125,7 @@ watch(
+ 
+ function onContentChange(val) {
+   if (val !== (props.value ?? '')) isDirty.value = true
++  emit('input', val)
+ }
+ 
+ function onBlur() {
+diff --git a/frontend/src/components/Modals/DoctypeModal.vue b/frontend/src/components/Modals/DoctypeModal.vue
+index 0ae0fb0..36fce86 100644
+--- a/frontend/src/components/Modals/DoctypeModal.vue
++++ b/frontend/src/components/Modals/DoctypeModal.vue
+@@ -59,8 +59,16 @@
+           <TaskNotes
+             v-if="doctype === 'CRM Task' && editMode"
+             :task="docname"
++            :task-title="doc.title"
++            :status="doc.status"
+             @added="notesAdded = true"
+           />
++          <!-- inside this dialog, so it shares its focus handling -->
++          <TaskStatusNoteModal
++            v-if="statusPrompt"
++            v-bind="statusPrompt.props"
++            @resolve="statusPrompt.resolve"
++          />
+         </div>
+       </div>
+       <div class="px-4 pb-7 pt-4 sm:px-6">
+@@ -81,6 +89,7 @@
+ import EditIcon from '@/components/Icons/EditIcon.vue'
+ import FieldLayout from '@/components/FieldLayout/FieldLayout.vue'
+ import TaskNotes from '@/components/Activities/TaskNotes.vue'
++import TaskStatusNoteModal from '@/components/Modals/TaskStatusNoteModal.vue'
+ import CustomActions from '@/components/CustomActions.vue'
+ import { useDocument } from '@/data/document'
+ import { globalStore } from '@/stores/global'
+@@ -124,6 +133,8 @@ const layout = createResource({
+ const error = ref(null)
+ // notes written on a task show on its lead or deal, so that page refreshes when this closes
+ const notesAdded = ref(false)
++// asks for a note when a task's status is changed here, see update()
++const statusPrompt = ref(null)
+ const editMode = computed(() => Boolean(document.doc?.name))
+ 
+ const _create = createResource({
+@@ -159,15 +170,44 @@ async function create() {
+   })
+ }
+ 
+-function update() {
++function askForStatusNote(task, from, to) {
++  return new Promise((resolve) => {
++    statusPrompt.value = {
++      props: { task, from, to },
++      resolve: (answer) => {
++        statusPrompt.value = null
++        resolve(answer)
++      },
++    }
++  })
++}
++
++async function update() {
++  if (statusPrompt.value) return // already asking
+   // frappe-ui skips saving an unchanged doc without calling back, so handle it here
+   if (!document.isDirty) {
+     toast.info(__('Nothing to update'))
+     show.value = false
+     return
+   }
++
++  // a task's new status comes with a note about it, which can be skipped
++  let note = null
++  const from = document.originalDoc?.status
++  const to = document.doc?.status
++  if (props.doctype === 'CRM Task' && from && to && from !== to) {
++    const answer = await askForStatusNote(
++      { ...document.doc, name: props.docname },
++      from,
++      to,
++    )
++    if (answer.action === 'cancel') return
++    if (answer.action === 'save') note = answer.note
++  }
++
+   document.save.submit(null, {
+-    onSuccess: (d) => {
++    onSuccess: async (d) => {
++      if (note) await saveStatusNote(note)
+       notesAdded.value = false
+       emit('afterUpdate', d)
+       show.value = false
+@@ -178,6 +218,14 @@ function update() {
+   })
+ }
+ 
++async function saveStatusNote(note) {
++  try {
++    await call('crm.api.task.add_note', { task: props.docname, ...note })
++  } catch {
++    toast.error(__('The task was saved, but its note could not be saved'))
++  }
++}
++
+ async function submit() {
+   // editors save their text on blur, so blur first when saving from the keyboard
+   window.document.activeElement?.blur()
+diff --git a/frontend/src/components/Modals/GlobalModals.vue b/frontend/src/components/Modals/GlobalModals.vue
+index c0bf101..27c9787 100644
+--- a/frontend/src/components/Modals/GlobalModals.vue
++++ b/frontend/src/components/Modals/GlobalModals.vue
+@@ -19,12 +19,14 @@
+   <NoteViewModal v-if="showNoteView" />
+   <MentionHoverCard />
+   <FieldLayoutDialogContainer />
++  <TaskStatusNoteContainer />
+   <CommandPalette />
+   <SetupFeedback />
+ </template>
+ <script setup>
+ import CommandPalette from '@/components/CommandPalette/CommandPalette.vue'
+ import FieldLayoutDialogContainer from '@/components/Modals/FieldLayoutDialogContainer.vue'
++import TaskStatusNoteContainer from '@/components/Modals/TaskStatusNoteContainer.vue'
+ import ChangePasswordModal from '@/components/Modals/ChangePasswordModal.vue'
+ import CreateDocumentModal from '@/components/Modals/CreateDocumentModal.vue'
+ import QuickEntryModal from '@/components/Modals/QuickEntryModal.vue'
+diff --git a/frontend/src/components/Modals/TaskStatusNoteContainer.vue b/frontend/src/components/Modals/TaskStatusNoteContainer.vue
+new file mode 100644
+index 0000000..0bee965
+--- /dev/null
++++ b/frontend/src/components/Modals/TaskStatusNoteContainer.vue
+@@ -0,0 +1,15 @@
++<template>
++  <TaskStatusNoteModal
++    v-for="prompt in taskStatusNotePrompts"
++    :key="prompt.key"
++    :task="prompt.task"
++    :from="prompt.from"
++    :to="prompt.to"
++    @resolve="prompt.resolve"
++  />
++</template>
++
++<script setup>
++import TaskStatusNoteModal from '@/components/Modals/TaskStatusNoteModal.vue'
++import { taskStatusNotePrompts } from '@/composables/taskStatusNote'
++</script>
+diff --git a/frontend/src/components/Modals/TaskStatusNoteModal.vue b/frontend/src/components/Modals/TaskStatusNoteModal.vue
+new file mode 100644
+index 0000000..f305219
+--- /dev/null
++++ b/frontend/src/components/Modals/TaskStatusNoteModal.vue
+@@ -0,0 +1,249 @@
++<template>
++  <Dialog
++    v-model:open="open"
++    :title="__('Add a note?')"
++    size="xl"
++    @close="cancel"
++  >
++    <template #default>
++      <div
++        @keydown.meta.enter.capture.prevent.stop="save"
++        @keydown.ctrl.enter.capture.prevent.stop="save"
++      >
++        <div class="-mt-3 mb-4 flex items-center gap-1.5 text-p-base text-ink-gray-7">
++          <span class="truncate font-medium text-ink-gray-9">
++            {{ task.title }}
++          </span>
++          <TaskStatusIcon :status="from" />
++          <span class="lucide-arrow-right size-3.5 text-ink-gray-5" />
++          <TaskStatusIcon :status="to" />
++          <span>{{ __(to) }}</span>
++        </div>
++        <div class="flex flex-col gap-3">
++          <div>
++            <div class="mb-2 flex items-center justify-between text-sm text-ink-gray-5">
++              <span>{{ __('Title') }}</span>
++              <Button
++                v-if="canSuggest && suggestionsAvailable"
++                variant="ghost"
++                size="sm"
++                icon-left="lucide-sparkles"
++                :label="__('Suggest')"
++                :loading="suggesting"
++                :tooltip="__('Write the title from the note')"
++                @click="suggest(true)"
++              />
++            </div>
++            <FormControl
++              type="text"
++              :modelValue="title"
++              @update:modelValue="onTitleInput"
++            />
++          </div>
++          <div>
++            <div class="mb-2 text-sm text-ink-gray-5">{{ __('Note') }}</div>
++            <TextEditorControl
++              :value="content"
++              :fixedMenu="false"
++              :mentions="true"
++              :placeholder="__('What happened?')"
++              @input="onContentInput"
++              @change="onContentBlur"
++            />
++          </div>
++        </div>
++      </div>
++    </template>
++    <template #actions>
++      <div class="flex items-center justify-between gap-2">
++        <div><ErrorMessage :message="error" /></div>
++        <div class="flex gap-2">
++          <Button :label="__('Cancel')" @click="cancel" />
++          <Button :label="__('Skip')" @click="skip" />
++          <Button
++            variant="solid"
++            :label="__('Save note')"
++            :disabled="!canSave"
++            @click="save"
++          />
++        </div>
++      </div>
++    </template>
++  </Dialog>
++</template>
++<script setup>
++import TaskStatusIcon from '@/components/Icons/TaskStatusIcon.vue'
++import TextEditorControl from '@/components/Controls/TextEditorControl.vue'
++import { plainText, taskNoteTitle } from '@/utils/taskNoteTitle'
++import { Button, Dialog, ErrorMessage, FormControl, call } from 'frappe-ui'
++import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
++
++// the title is suggested once the note has this much text, a second after typing stops
++const SUGGEST_MIN_CHARS = 20
++const SUGGEST_DELAY = 1000
++const SUGGEST_TIMEOUT = 4000
++
++const props = defineProps({
++  task: { type: Object, required: true },
++  from: { type: String, required: true },
++  to: { type: String, required: true },
++})
++
++const emit = defineEmits(['resolve'])
++
++const open = ref(true)
++// The title is built from the task and the new status at once; the deal and contact names
++// arrive a moment later, and an app's suggestion once there is text. Each rebuilds it.
++let names = {}
++let suggestedSubject = ''
++const buildTitle = () =>
++  taskNoteTitle({
++    task: props.task,
++    from: props.from,
++    to: props.to,
++    subject: suggestedSubject,
++    ...names,
++  })
++const title = ref(buildTitle())
++const content = ref('')
++const error = ref('')
++
++// the title is ours until the person types in it
++const titleEdited = ref(false)
++// false once the server says no app suggests titles, so the button goes away
++const suggestionsAvailable = ref(true)
++const suggesting = ref(false)
++
++const text = computed(() => plainText(content.value))
++const canSuggest = computed(() => text.value.length >= SUGGEST_MIN_CHARS)
++const canSave = computed(
++  () => title.value.trim() && (text.value || titleEdited.value),
++)
++
++let settled = false
++// saving from the keyboard blurs the editor first; that must not ask for a title
++let closing = false
++let timer = null
++let latestRequest = 0
++let suggestedFor = ''
++
++// Add the deal and contact to the title, unless the person has changed it
++async function fillTitleContext() {
++  try {
++    const result = await withTimeout(
++      call('crm.api.task.get_title_context', { task: props.task.name }),
++      SUGGEST_TIMEOUT,
++    )
++    if (settled) return
++    names = result || {}
++    if (!titleEdited.value) title.value = buildTitle()
++  } catch {
++    // the title without them stays
++  }
++}
++
++onMounted(fillTitleContext)
++
++function onTitleInput(value) {
++  title.value = value
++  titleEdited.value = true
++  error.value = ''
++}
++
++function onContentInput(value) {
++  content.value = value
++  clearTimeout(timer)
++  timer = setTimeout(() => suggest(false), SUGGEST_DELAY)
++}
++
++function onContentBlur(value) {
++  content.value = value
++  suggest(false)
++}
++
++// Ask the server for a short subject. Without `force` it only replaces a title
++// nobody has edited, and only for text it has not already been asked about.
++async function suggest(force = false) {
++  clearTimeout(timer)
++  if (settled || closing || !canSuggest.value || !suggestionsAvailable.value) return
++  if (!force && (titleEdited.value || text.value === suggestedFor)) return
++
++  const request = ++latestRequest
++  const asked = text.value
++  suggesting.value = true
++  try {
++    const result = await withTimeout(
++      call('crm.api.task.suggest_note_title', {
++        task: props.task.name,
++        status_from: props.from,
++        status_to: props.to,
++        content: content.value,
++      }),
++      SUGGEST_TIMEOUT,
++    )
++    // a newer request, or the dialog closing, makes this answer stale
++    if (request !== latestRequest || settled) return
++    suggestedFor = asked
++    if (!result?.subject) {
++      suggestionsAvailable.value = false
++      return
++    }
++    if (titleEdited.value && !force) return
++    suggestedSubject = result.subject.trim()
++    title.value = buildTitle()
++    titleEdited.value = false
++  } catch {
++    // slow or failing: the title we have stays
++  } finally {
++    if (request === latestRequest) suggesting.value = false
++  }
++}
++
++function withTimeout(promise, ms) {
++  return Promise.race([
++    promise,
++    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
++  ])
++}
++
++function settle(result) {
++  if (settled) return
++  settled = true
++  clearTimeout(timer)
++  open.value = false
++  emit('resolve', result)
++}
++
++async function save() {
++  // editors hand over their text on blur, so blur first when saving from the keyboard
++  closing = true
++  window.document.activeElement?.blur()
++  await nextTick()
++  if (!title.value.trim()) {
++    error.value = __('A note needs a title')
++    closing = false
++    return
++  }
++  if (!canSave.value) {
++    closing = false
++    return
++  }
++  settle({
++    action: 'save',
++    note: { title: title.value.trim(), content: content.value },
++  })
++}
++
++function skip() {
++  settle({ action: 'skip' })
++}
++
++function cancel() {
++  settle({ action: 'cancel' })
++}
++
++onBeforeUnmount(() => {
++  settled = true
++  clearTimeout(timer)
++})
++</script>
+diff --git a/frontend/src/components/ViewControls.vue b/frontend/src/components/ViewControls.vue
+index b0abadc..61c5e21 100644
+--- a/frontend/src/components/ViewControls.vue
++++ b/frontend/src/components/ViewControls.vue
+@@ -343,6 +343,7 @@ import QuickFilterField from '@/components/QuickFilterField.vue'
+ import EditIcon from '@/components/Icons/EditIcon.vue'
+ import DuplicateIcon from '@/components/Icons/DuplicateIcon.vue'
+ import CheckIcon from '@/components/Icons/CheckIcon.vue'
++import { promptTaskStatusNote } from '@/composables/taskStatusNote'
+ import PinIcon from '@/components/Icons/PinIcon.vue'
+ import UnpinIcon from '@/components/Icons/UnpinIcon.vue'
+ import ExportIcon from '@/components/Icons/ExportIcon.vue'
+@@ -1340,8 +1341,42 @@ function cancelKanbanLostReason() {
+   revertKanbanCardMove(data)
+ }
+ 
++// Dragging a task to another status column asks for a note about it; the note
++// can be skipped, and cancelling puts the card back
++async function moveTaskCard(data) {
++  const loaded = await call('frappe.client.get_value', {
++    doctype: 'CRM Task',
++    filters: { name: data.item },
++    fieldname: ['title'],
++  }).catch(() => ({}))
++  const answer = await promptTaskStatusNote(
++    { name: data.item, ...loaded },
++    data.from,
++    data.to,
++  )
++  if (answer.action === 'cancel') {
++    revertKanbanCardMove(data)
++    return
++  }
++  try {
++    await call('crm.api.task.set_status', {
++      task: data.item,
++      status: data.to,
++      note: answer.action === 'save' ? answer.note : null,
++    })
++    persistKanbanColumnOrder(data.kanban_columns)
++  } catch {
++    toast.error(__('Could not move the card. Reverting.'))
++    revertKanbanCardMove(data)
++  }
++}
++
+ function updateKanbanSettings(data) {
+   if (data.item && data.to) {
++    if (props.doctype === 'CRM Task' && view.value.column_field === 'status') {
++      moveTaskCard(data)
++      return
++    }
+     if (
+       view.value.column_field === 'status' &&
+       getKanbanStatusType(data.to) === 'Lost'
+diff --git a/frontend/src/composables/taskStatusNote.js b/frontend/src/composables/taskStatusNote.js
+new file mode 100644
+index 0000000..e35488a
+--- /dev/null
++++ b/frontend/src/composables/taskStatusNote.js
+@@ -0,0 +1,39 @@
++import { ref } from 'vue'
++
++/**
++ * Open prompts, rendered by TaskStatusNoteContainer in GlobalModals.vue.
++ */
++export const taskStatusNotePrompts = ref([])
++
++/**
++ * Ask for a note when a task changes status. Resolves with
++ *   { action: 'save', note: { title, content } }  write the note
++ *   { action: 'skip' }                             change the status, no note
++ *   { action: 'cancel' }                           leave the status as it was
++ *
++ * @param {object} task - the task as loaded: { name, title, due_date, ... }
++ * @param {string} from - the status it has
++ * @param {string} to   - the status it is being given
++ */
++export function promptTaskStatusNote(task, from, to) {
++  return new Promise((resolve) => {
++    let resolved = false
++    const entry = {
++      key: `tsn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
++      task,
++      from,
++      to,
++      resolve: (result) => {
++        if (resolved) return
++        resolved = true
++        resolve(result)
++        // let the dialog finish closing before it is removed
++        setTimeout(() => {
++          const i = taskStatusNotePrompts.value.indexOf(entry)
++          if (i !== -1) taskStatusNotePrompts.value.splice(i, 1)
++        }, 300)
++      },
++    }
++    taskStatusNotePrompts.value.push(entry)
++  })
++}
+diff --git a/frontend/src/utils/taskNoteTitle.js b/frontend/src/utils/taskNoteTitle.js
+new file mode 100644
+index 0000000..572b580
+--- /dev/null
++++ b/frontend/src/utils/taskNoteTitle.js
+@@ -0,0 +1,78 @@
++// The title proposed for the note written when a task changes status:
++//
++//   {New status}, {Task} / {Deal}, {Contact}
++//
++// "Done, Follow up / Kuehne + Nagel, Shirish Ekbote". The status leads, so a list of notes
++// reads by outcome; then what the task was, and whose it is. A part that is not known (a
++// task with no deal, a deal with no contact) is left out. When an app suggests a subject
++// from the note's text (server hook `crm_task_note_title`), it takes the place of the task.
++
++const SUBJECT_MAX = 40
++const TASK_MAX = 60
++// FCRM Note's title is a Data field
++const TITLE_MAX = 140
++
++// The task's title, tidied: spaces collapsed, reply prefixes ("Re:", "Fwd:", "AW:")
++// removed, first letter capitalised, cut at a word boundary when long.
++export function taskSubject(title, max = SUBJECT_MAX) {
++  let subject = (title || '')
++    .replace(/\s+/g, ' ')
++    .trim()
++    .replace(/^((re|fwd?|aw)\s*:\s*)+/i, '')
++  subject = subject.charAt(0).toUpperCase() + subject.slice(1)
++  if (subject.length <= max) return subject
++  const cut = subject.slice(0, max)
++  const words = cut.includes(' ') ? cut.slice(0, cut.lastIndexOf(' ')) : cut
++  return words.replace(/[,;:\- ]+$/, '') + '…'
++}
++
++// A note's text without markup, for judging whether there is enough to summarise.
++export function plainText(html) {
++  return (html || '')
++    .replace(/<[^>]*>/g, ' ')
++    .replace(/&nbsp;/g, ' ')
++    .replace(/\s+/g, ' ')
++    .trim()
++}
++
++// The task's title without the names the title already carries elsewhere: "Follow up:
++// Shirish Ekbote, Kuehne + Nagel" under the deal "Kuehne + Nagel" and the contact
++// "Shirish Ekbote" is "Follow up". Names are matched whole and ignoring case, and the
++// separators and connectors ("with", "at") they leave dangling are removed too.
++export function withoutNames(title, names) {
++  let text = title || ''
++  for (const name of names) {
++    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
++    text = text.replace(
++      new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'giu'),
++      '',
++    )
++  }
++  if (text === (title || '')) return text
++  return text
++    .replace(/\(\s*\)/g, '')
++    .replace(/\s+/g, ' ')
++    .replace(/\s*([,;:])(\s*[,;:])+/g, '$1')
++    .replace(/^[\s,;:\-–—|/@&]+/, '')
++    .replace(/(?:[\s,;:\-–—|/@&]|\b(?:with|at|for|to|from|of|and|re)\b)+$/i, '')
++    .trim()
++}
++
++// `deal` and `contact` are the names from `crm.api.task.get_title_context`; `subject` is
++// what an app suggested from the note's text, in place of the task's title. The task part
++// is cut to fit what is left of the title's length once the other parts are in.
++export function taskNoteTitle({ task, to, deal, contact, subject }) {
++  const status = (to || '').trim()
++  const names = [deal, contact].map((name) => (name || '').trim()).filter(Boolean)
++  // a contact that is the deal's name would only say it twice
++  if (names.length === 2 && names[0].toLowerCase() === names[1].toLowerCase()) names.pop()
++  const whose = names.join(', ')
++  const tail = whose ? ` / ${whose}` : ''
++  const lead = status ? `${status}, ` : ''
++  const max = Math.max(
++    SUBJECT_MAX / 2,
++    Math.min(TASK_MAX, TITLE_MAX - lead.length - tail.length),
++  )
++  const said = withoutNames(subject, names) || withoutNames(task?.title, names)
++  return `${[status, taskSubject(said, max)].filter(Boolean).join(', ')}${tail}`
++}

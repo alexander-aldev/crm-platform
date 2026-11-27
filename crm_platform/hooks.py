@@ -15,5 +15,9 @@ update_website_context = "crm_platform.extensions.add_crm_extensions"
 # Másquetú theme, deal card, column totals and board header
 crm_frontend_extensions = ["/assets/crm_platform/js/masquetu.js"]
 
+# The title suggested for the note written when a task changes status (crm-patches/0003).
+# The service behind it is configured per site, see crm_platform/api/note_title.py
+crm_task_note_title = "crm_platform.api.note_title.suggest"
+
 after_install = "crm_platform.branding.apply"
 after_migrate = "crm_platform.branding.apply"

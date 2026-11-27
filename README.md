@@ -9,7 +9,7 @@ It reaches the CRM frontend through the extension interface added by `crm-patche
 | Path | What it is |
 |---|---|
 | `crm_platform/` | The Frappe app (Python package, hooks, public assets, tests) |
-| `crm-patches/` | The reviewed patch sets for `apps/crm`, one directory per upstream tag (`crm-patches/<tag>/`) |
+| `crm-patches/` | The reviewed patch sets for `apps/crm`, one directory per upstream tag (`crm-patches/<tag>/`). Their tests are in `crm_platform/tests/crm_patches/` |
 | `scripts/` | `gen_theme_tokens.py` (theme tokens) |
 | `docs/` | The deal card spec and the Kanban design reference (`docs/kanban/`) |
 
@@ -22,6 +22,8 @@ It reaches the CRM frontend through the extension interface added by `crm-patche
 | `crm_platform/public/css/_tokens.generated.css` | frappe-ui's light gray tokens re-pointed at the Másquetú warm ramp. Generated; don't edit |
 | `crm_platform/extensions.py` | `update_website_context` hook: lists the apps' `crm_frontend_extensions` modules in the `/crm` page |
 | `crm_platform/api/kanban.py` | `board_meta`: column totals, and per deal card the title, lead source, owner, primary contact and earliest open task (spec: `docs/deal-card-activity-indicator.md`) |
+| `crm_platform/api/note_title.py` | The `crm_task_note_title` hook of `crm-patches/0003`: asks a Másquetú service (outside this repository, over HTTP) for a short subject for the note written when a task changes status. Site config `masquetu_note_title_url` and `masquetu_api_key`; off when unset |
+| `crm_platform/api/note_title_mock.py` | A stand-in for that service for development: the note's first words. `masquetu_note_title_url` = `mock`, or its URL, in developer mode |
 | `crm_platform/branding.py` | Sets the brand name in FCRM Settings on install and migrate, plus the logo and favicon once `public/images/logo.svg` and `favicon.png` exist |
 
 ## Installing
@@ -40,8 +42,9 @@ Changes to `public/js` or `public/css` need only a browser reload when the bench
 ## Tests
 
 ```bash
-bench --site <site> run-tests --app crm_platform                           # board data (Python)
+bench --site <site> run-tests --app crm_platform                           # board data, note titles, task notes (Python)
 CRM_FRONTEND=<bench>/apps/crm/frontend node --test crm_platform/tests/js/*.test.mjs   # card formatting (JS)
+CRM_FRONTEND=<bench>/apps/crm/frontend node --test crm_platform/tests/crm_patches/*.test.mjs   # note title formula (JS)
 ```
 
 ## After a frappe-ui upgrade

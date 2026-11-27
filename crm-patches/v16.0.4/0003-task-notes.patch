@@ -1,0 +1,604 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?M=C3=A1squet=C3=BA?= <hello@masquetu.ai>
+Date: Thu, 26 Nov 2026 12:00:00 +0200
+Subject: [PATCH 3/4] Task notes: write notes on a task, shown on its lead or
+ deal
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A note written on a task is an ordinary FCRM Note that references the task
+(reference_doctype "CRM Task"). No DocType or schema changes. The lead's or
+deal's Notes tab and timeline include the notes on its tasks, and the notes
+follow the task if it moves to another record.
+
+- crm.api.task: add_note, get_notes, set_status (status and note in one
+  request) and suggest_note_title (calls a crm_task_note_title hook)
+- activities.get_linked_notes: include notes on the record's tasks
+- CRMTask.on_trash: re-point the task's notes to its lead or deal, or delete
+  them when it has none (the dynamic link would block the delete)
+- FCRMNote.notify_mentions: resolve a task note to the task's parent
+- Task dialog: Notes section with an inline composer; note cards say which
+  task they were written on
+
+Modified by Másquetú, 2026-11-26.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ crm/api/activities.py                         |  42 +++--
+ crm/api/task.py                               | 176 ++++++++++++++++++
+ crm/fcrm/doctype/crm_task/crm_task.py         |  13 ++
+ crm/fcrm/doctype/fcrm_note/fcrm_note.py       |  24 ++-
+ .../src/components/Activities/Activities.vue  |   6 +-
+ .../src/components/Activities/NoteArea.vue    |  10 +
+ .../src/components/Activities/TaskNotes.vue   | 134 +++++++++++++
+ .../src/components/Modals/DoctypeModal.vue    |  16 ++
+ 8 files changed, 398 insertions(+), 23 deletions(-)
+ create mode 100644 crm/api/task.py
+ create mode 100644 frontend/src/components/Activities/TaskNotes.vue
+
+diff --git a/crm/api/activities.py b/crm/api/activities.py
+index 765fd86..53b29ce 100644
+--- a/crm/api/activities.py
++++ b/crm/api/activities.py
+@@ -542,21 +542,33 @@ def get_linked_calls(name: str):
+ 
+ 
+ def get_linked_notes(name: str):
+-	notes = frappe.db.get_all(
+-		"FCRM Note",
+-		filters={"reference_docname": name},
+-		fields=[
+-			"name",
+-			"title",
+-			"content",
+-			"pinned",
+-			"pinned_by",
+-			"pinned_on",
+-			"owner",
+-			"modified",
+-			"creation",
+-		],
+-	)
++	"""The notes on a lead or deal, and the notes written on its tasks (those say which: `task`)."""
++	fields = [
++		"name",
++		"title",
++		"content",
++		"pinned",
++		"pinned_by",
++		"pinned_on",
++		"owner",
++		"modified",
++		"creation",
++	]
++	notes = frappe.db.get_all("FCRM Note", filters={"reference_docname": name}, fields=fields)
++
++	# task names are numbers, but a note's link to one is text
++	tasks = frappe.db.get_all("CRM Task", filters={"reference_docname": name}, fields=["name", "title"])
++	if tasks:
++		task_titles = {str(t.name): t.title for t in tasks}
++		task_notes = frappe.db.get_all(
++			"FCRM Note",
++			filters={"reference_doctype": "CRM Task", "reference_docname": ("in", list(task_titles))},
++			fields=[*fields, "reference_docname"],
++		)
++		for note in task_notes:
++			note.task = note.pop("reference_docname")
++			note.task_title = task_titles[note.task]
++		notes += task_notes
+ 	return notes or []
+ 
+ 
+diff --git a/crm/api/task.py b/crm/api/task.py
+new file mode 100644
+index 0000000..4708dc5
+--- /dev/null
++++ b/crm/api/task.py
+@@ -0,0 +1,176 @@
++"""Notes on tasks, and the note written when a task changes status.
++
++A note written on a task is an ordinary FCRM Note that references the task
++(`reference_doctype` "CRM Task"), so no field is added to the note. The lead's or deal's
++Notes tab and timeline include the notes on its tasks (`activities.get_linked_notes`),
++and the notes follow the task if it moves to another record. The status change a note
++was written for is in its title ("Done: ...").
++
++Apps can suggest the note's title by listing a function in the `crm_task_note_title`
++hook: `fn(context: dict) -> str | None`, see `suggest_note_title`.
++"""
++
++import frappe
++from frappe import _
++from frappe.utils import strip_html_tags
++
++NOTE_FIELDS = ["name", "title", "content", "pinned", "owner", "modified", "creation"]
++
++
++@frappe.whitelist()
++def get_notes(task: str | int):
++	"""The task's notes, newest first."""
++	frappe.get_doc("CRM Task", task).check_permission("read")
++	return frappe.get_list(
++		"FCRM Note",
++		filters={"reference_doctype": "CRM Task", "reference_docname": str(task)},
++		fields=NOTE_FIELDS,
++		order_by="creation desc",
++	)
++
++
++@frappe.whitelist()
++def add_note(task: str | int, title: str, content: str | None = None):
++	"""Write a note on a task, without changing the task."""
++	doc = frappe.get_doc("CRM Task", task)
++	doc.check_permission("write")
++	return _insert_note(doc, title, content).as_dict()
++
++
++@frappe.whitelist()
++def set_status(task: str | int, status: str, note: dict | str | None = None):
++	"""Change a task's status and, if given, write its note, in one request: both or neither.
++
++	`note` is `{"title": ..., "content": ...}`. Leave it out to change the status alone.
++	"""
++	note = frappe.parse_json(note) if note else None
++	if note and not (note.get("title") or "").strip():
++		frappe.throw(_("A note needs a title"), title=_("Missing Title"))
++
++	doc = frappe.get_doc("CRM Task", task)
++	doc.check_permission("write")
++	if doc.status != status:
++		doc.status = status
++		doc.save()
++
++	if note:
++		_insert_note(doc, note["title"], note.get("content"))
++	return doc.as_dict()
++
++
++def _insert_note(task, title: str, content: str | None):
++	return frappe.get_doc(
++		{
++			"doctype": "FCRM Note",
++			"title": title.strip(),
++			"content": content,
++			"reference_doctype": "CRM Task",
++			"reference_docname": str(task.name),
++		}
++	).insert()
++
++
++@frappe.whitelist()
++def get_title_context(task: str | int):
++	"""The names a note's title is built from: `{"deal": ..., "contact": ...}`, each maybe None.
++
++	`deal` is the organization of the task's deal or lead, or the person's name when it has
++	none. `contact` is the deal's primary contact (the first one if none is primary), or the
++	lead's person when the lead has an organization.
++	"""
++	doc = frappe.get_doc("CRM Task", task)
++	doc.check_permission("read")
++	return _title_names(doc)
++
++
++def _title_names(task):
++	if task.reference_doctype not in ("CRM Lead", "CRM Deal") or not task.reference_docname:
++		return {"deal": None, "contact": None}
++
++	record = frappe.db.get_value(
++		task.reference_doctype, task.reference_docname, ["organization", "lead_name"], as_dict=True
++	)
++	if not record:
++		return {"deal": None, "contact": None}
++
++	if task.reference_doctype == "CRM Deal":
++		contacts = frappe.get_all(
++			"CRM Contacts",
++			filters={"parenttype": "CRM Deal", "parent": task.reference_docname},
++			fields=["full_name"],
++			order_by="is_primary desc, idx asc",
++			limit=1,
++		)
++		contact = contacts[0].full_name if contacts else None
++	else:
++		contact = record.lead_name if record.organization else None
++
++	return {"deal": record.organization or record.lead_name or None, "contact": contact or None}
++
++
++@frappe.whitelist()
++def suggest_note_title(task: str | int, status_from: str, status_to: str, content: str | None = None):
++	"""A short title for the note about to be written, from an app's `crm_task_note_title` hook.
++
++	Returns `{"subject": str}`, or None when no app suggests one or the hook fails. The
++	caller puts the subject in the title in place of the task's own title, between the
++	new status and the deal and contact names. The hook gets:
++
++	    task         {name, title, due_date, priority}
++	    status_from, status_to
++	    parent       {doctype, name, title, status}, or None
++	    names        {deal, contact}, each maybe None: the title already says them
++	    content      the note's text without markup
++	"""
++	try:
++		suggester = _title_suggester()
++	except Exception:
++		frappe.log_error(title="Task note title hook not found")
++		return None
++	if not suggester:
++		return None
++
++	doc = frappe.get_doc("CRM Task", task)
++	doc.check_permission("read")
++	context = {
++		"task": {
++			"name": doc.name,
++			"title": doc.title,
++			"due_date": str(doc.due_date) if doc.due_date else None,
++			"priority": doc.priority,
++		},
++		"status_from": status_from,
++		"status_to": status_to,
++		"parent": _parent(doc),
++		"names": _title_names(doc),
++		"content": strip_html_tags(content or "").strip(),
++	}
++	try:
++		subject = suggester(context)
++	except Exception:
++		frappe.log_error(title="Task note title suggestion failed")
++		return None
++	return {"subject": subject} if isinstance(subject, str) and subject.strip() else None
++
++
++def _title_suggester():
++	"""The function of the last app that lists one under `crm_task_note_title`, if any."""
++	hooks = frappe.get_hooks("crm_task_note_title")
++	return frappe.get_attr(hooks[-1]) if hooks else None
++
++
++def _parent(task):
++	if task.reference_doctype not in ("CRM Lead", "CRM Deal") or not task.reference_docname:
++		return None
++	title_fields = ["lead_name"] if task.reference_doctype == "CRM Lead" else ["organization", "lead_name"]
++	record = frappe.db.get_value(
++		task.reference_doctype, task.reference_docname, [*title_fields, "status"], as_dict=True
++	)
++	if not record:
++		return None
++	return {
++		"doctype": task.reference_doctype,
++		"name": task.reference_docname,
++		"title": next((record[f] for f in title_fields if record.get(f)), task.reference_docname),
++		"status": record.status,
++	}
+diff --git a/crm/fcrm/doctype/crm_task/crm_task.py b/crm/fcrm/doctype/crm_task/crm_task.py
+index 3e0e30e..92589e0 100644
+--- a/crm/fcrm/doctype/crm_task/crm_task.py
++++ b/crm/fcrm/doctype/crm_task/crm_task.py
+@@ -1,6 +1,7 @@
+ # Copyright (c) 2023, Frappe Technologies Pvt. Ltd. and contributors
+ # For license information, please see license.txt
+ 
++import frappe
+ from frappe.desk.form.assign_to import add as assign
+ from frappe.desk.form.assign_to import remove as unassign
+ from frappe.model.document import Document
+@@ -38,6 +39,18 @@ class CRMTask(Document):
+ 			self.unassign_from_previous_user(self.get_doc_before_save().assigned_to)
+ 			self.assign_to()
+ 
++	def on_trash(self):
++		"""Notes written on the task stay on its lead or deal; with none, they go with the task."""
++		# a note's reference is a dynamic link, which would otherwise stop the task being deleted
++		parent = {"reference_doctype": self.reference_doctype, "reference_docname": self.reference_docname}
++		for note in frappe.get_all(
++			"FCRM Note", filters={"reference_doctype": self.doctype, "reference_docname": str(self.name)}
++		):
++			if self.reference_doctype and self.reference_docname:
++				frappe.db.set_value("FCRM Note", note.name, parent, update_modified=False)
++			else:
++				frappe.delete_doc("FCRM Note", note.name, ignore_permissions=True)
++
+ 	def unassign_from_previous_user(self, user: str | None):
+ 		if user:
+ 			unassign(self.doctype, self.name, user)
+diff --git a/crm/fcrm/doctype/fcrm_note/fcrm_note.py b/crm/fcrm/doctype/fcrm_note/fcrm_note.py
+index 5145f41..be846e9 100644
+--- a/crm/fcrm/doctype/fcrm_note/fcrm_note.py
++++ b/crm/fcrm/doctype/fcrm_note/fcrm_note.py
+@@ -44,9 +44,19 @@ class FCRMNote(Document):
+ 	def on_update(self):
+ 		self.notify_mentions()
+ 
++	def parent_reference(self) -> tuple[str | None, str | None]:
++		"""The lead or deal the note is on: for a note on a task, the task's."""
++		if self.reference_doctype == "CRM Task" and self.reference_docname:
++			task = frappe.db.get_value(
++				"CRM Task", self.reference_docname, ["reference_doctype", "reference_docname"]
++			)
++			return tuple(task) if task else (None, None)
++		return self.reference_doctype, self.reference_docname
++
+ 	def notify_mentions(self):
+ 		"""Notify people mentioned in the note, once, when they are first added."""
+-		if self.reference_doctype not in ("CRM Lead", "CRM Deal") or not self.reference_docname:
++		parent_doctype, parent_docname = self.parent_reference()
++		if parent_doctype not in ("CRM Lead", "CRM Deal") or not parent_docname:
+ 			return
+ 
+ 		before = self.get_doc_before_save()
+@@ -69,10 +79,10 @@ class FCRMNote(Document):
+ 		if not mentioned:
+ 			return
+ 
+-		is_lead = self.reference_doctype == "CRM Lead"
++		is_lead = parent_doctype == "CRM Lead"
+ 		record = frappe.db.get_value(
+-			self.reference_doctype,
+-			self.reference_docname,
++			parent_doctype,
++			parent_docname,
+ 			["lead_name"] if is_lead else ["organization", "lead_name"],
+ 			as_dict=True,
+ 		)
+@@ -82,7 +92,7 @@ class FCRMNote(Document):
+ 			<div class="mb-2 leading-5 text-ink-gray-5">
+ 				<span class="font-medium text-ink-gray-9">{escape_html(author)}</span>
+ 				<span>{_("mentioned you in a note on {0}").format(_("lead") if is_lead else _("deal"))}</span>
+-				<span class="font-medium text-ink-gray-9">{escape_html(name or self.reference_docname)}</span>
++				<span class="font-medium text-ink-gray-9">{escape_html(name or parent_docname)}</span>
+ 			</div>
+ 		"""
+ 
+@@ -96,8 +106,8 @@ class FCRMNote(Document):
+ 					"notification_text": notification_text,
+ 					"reference_doctype": "FCRM Note",
+ 					"reference_docname": self.name,
+-					"redirect_to_doctype": self.reference_doctype,
+-					"redirect_to_docname": self.reference_docname,
++					"redirect_to_doctype": parent_doctype,
++					"redirect_to_docname": parent_docname,
+ 				}
+ 			)
+ 
+diff --git a/frontend/src/components/Activities/Activities.vue b/frontend/src/components/Activities/Activities.vue
+index ee2fe19..14420da 100644
+--- a/frontend/src/components/Activities/Activities.vue
++++ b/frontend/src/components/Activities/Activities.vue
+@@ -43,7 +43,11 @@
+           :id="note.name"
+           @click="openNote(note, { edit: () => modalRef.showNote(note) })"
+         >
+-          <NoteArea v-model="all_activities" :note="note" />
++          <NoteArea
++            v-model="all_activities"
++            :note="note"
++            :modalRef="modalRef"
++          />
+         </div>
+       </div>
+       <div v-else-if="title == 'Comments'" class="pb-5">
+diff --git a/frontend/src/components/Activities/NoteArea.vue b/frontend/src/components/Activities/NoteArea.vue
+index e75f1a9..a5e951a 100644
+--- a/frontend/src/components/Activities/NoteArea.vue
++++ b/frontend/src/components/Activities/NoteArea.vue
+@@ -45,6 +45,15 @@
+         />
+       </Dropdown>
+     </div>
++    <div
++      v-if="note.task && note.task_title"
++      class="-mt-1 truncate text-sm text-ink-gray-5"
++      :class="modalRef?.showTask && 'hover:text-ink-gray-8'"
++      :title="__('Open task')"
++      @click.stop="modalRef?.showTask?.({ name: note.task })"
++    >
++      ↳ {{ note.task_title }}
++    </div>
+     <!-- content is passed through sanitizeHTML() (DOMPurify) before rendering, so v-html is safe here -->
+     <!-- eslint-disable vue/no-v-html -->
+     <div
+@@ -81,6 +90,7 @@ import { computed } from 'vue'
+ 
+ const props = defineProps({
+   note: { type: Object, default: () => ({}) },
++  modalRef: { type: Object, default: null },
+ })
+ 
+ const notes = defineModel({ type: Object })
+diff --git a/frontend/src/components/Activities/TaskNotes.vue b/frontend/src/components/Activities/TaskNotes.vue
+new file mode 100644
+index 0000000..10e3f3e
+--- /dev/null
++++ b/frontend/src/components/Activities/TaskNotes.vue
+@@ -0,0 +1,134 @@
++<template>
++  <div class="mt-5 border-t border-outline-gray-2 pt-4">
++    <div class="mb-3 flex items-center justify-between">
++      <div class="text-lg-medium text-ink-gray-8">
++        {{ __('Notes') }}
++        <span v-if="notes.data?.length" class="text-ink-gray-5">
++          {{ notes.data.length }}
++        </span>
++      </div>
++      <Button
++        v-if="!adding"
++        variant="ghost"
++        icon-left="lucide-plus"
++        :label="__('Add note')"
++        @click="adding = true"
++      />
++    </div>
++
++    <div v-if="adding" class="mb-4 flex flex-col gap-2">
++      <FormControl
++        v-model="title"
++        type="text"
++        :placeholder="__('Title')"
++        autofocus
++      />
++      <TextEditorControl
++        :value="content"
++        :fixedMenu="false"
++        :placeholder="__('What happened?')"
++        @change="(v) => (content = v)"
++      />
++      <ErrorMessage v-if="error" :message="error" />
++      <div class="flex justify-end gap-2">
++        <Button :label="__('Cancel')" @click="reset" />
++        <Button
++          variant="solid"
++          :label="__('Save note')"
++          :loading="saving"
++          @click="save"
++        />
++      </div>
++    </div>
++
++    <div
++      v-for="note in notes.data"
++      :key="note.name"
++      class="border-b border-outline-gray-1 py-2 last:border-0"
++    >
++      <div class="flex items-center justify-between gap-3">
++        <div class="flex min-w-0 items-center gap-1.5">
++          <div class="truncate text-base font-medium text-ink-gray-9">
++            {{ note.title }}
++          </div>
++        </div>
++        <div class="flex shrink-0 items-center gap-2 text-sm text-ink-gray-5">
++          <span>{{ getUser(note.owner).full_name }}</span>
++          <TimelineTimestamp :date="note.creation" />
++        </div>
++      </div>
++      <!-- content is passed through sanitizeHTML() (DOMPurify) before rendering, so v-html is safe here -->
++      <!-- eslint-disable vue/no-v-html -->
++      <div
++        v-if="note.content"
++        class="prose-f prose-sm mt-1 line-clamp-3 max-w-none text-p-sm text-ink-gray-6"
++        v-html="sanitizeHTML(note.content)"
++      />
++      <!-- eslint-enable vue/no-v-html -->
++    </div>
++    <div
++      v-if="!notes.data?.length && !adding"
++      class="py-2 text-sm text-ink-gray-5"
++    >
++      {{ __('No notes on this task yet') }}
++    </div>
++  </div>
++</template>
++<script setup>
++import TextEditorControl from '@/components/Controls/TextEditorControl.vue'
++import TimelineTimestamp from '@/components/Activities/TimelineTimestamp.vue'
++import { usersStore } from '@/stores/users'
++import { sanitizeHTML } from '@/utils'
++import { Button, ErrorMessage, FormControl, call, createResource } from 'frappe-ui'
++import { ref } from 'vue'
++
++const props = defineProps({
++  task: { type: [String, Number], required: true },
++})
++
++// the note is written on the task's lead or deal too, so refresh what that page shows
++const emit = defineEmits(['added'])
++
++const { getUser } = usersStore()
++
++const notes = createResource({
++  url: 'crm.api.task.get_notes',
++  params: { task: props.task },
++  auto: true,
++})
++
++const adding = ref(false)
++const title = ref('')
++const content = ref('')
++const error = ref('')
++const saving = ref(false)
++
++function reset() {
++  adding.value = false
++  title.value = ''
++  content.value = ''
++  error.value = ''
++}
++
++async function save() {
++  if (!title.value.trim()) {
++    error.value = __('A note needs a title')
++    return
++  }
++  saving.value = true
++  try {
++    await call('crm.api.task.add_note', {
++      task: props.task,
++      title: title.value,
++      content: content.value,
++    })
++    reset()
++    notes.reload()
++    emit('added')
++  } catch (e) {
++    error.value = e.messages?.[0] || __('Could not save the note')
++  } finally {
++    saving.value = false
++  }
++}
++</script>
+diff --git a/frontend/src/components/Modals/DoctypeModal.vue b/frontend/src/components/Modals/DoctypeModal.vue
+index 0ec406c..0ae0fb0 100644
+--- a/frontend/src/components/Modals/DoctypeModal.vue
++++ b/frontend/src/components/Modals/DoctypeModal.vue
+@@ -56,6 +56,11 @@
+             :docname="docname"
+           />
+           <ErrorMessage v-if="error" class="mt-4" :message="__(error)" />
++          <TaskNotes
++            v-if="doctype === 'CRM Task' && editMode"
++            :task="docname"
++            @added="notesAdded = true"
++          />
+         </div>
+       </div>
+       <div class="px-4 pb-7 pt-4 sm:px-6">
+@@ -75,6 +80,7 @@
+ <script setup>
+ import EditIcon from '@/components/Icons/EditIcon.vue'
+ import FieldLayout from '@/components/FieldLayout/FieldLayout.vue'
++import TaskNotes from '@/components/Activities/TaskNotes.vue'
+ import CustomActions from '@/components/CustomActions.vue'
+ import { useDocument } from '@/data/document'
+ import { globalStore } from '@/stores/global'
+@@ -116,6 +122,8 @@ const layout = createResource({
+ })
+ 
+ const error = ref(null)
++// notes written on a task show on its lead or deal, so that page refreshes when this closes
++const notesAdded = ref(false)
+ const editMode = computed(() => Boolean(document.doc?.name))
+ 
+ const _create = createResource({
+@@ -160,6 +168,7 @@ function update() {
+   }
+   document.save.submit(null, {
+     onSuccess: (d) => {
++      notesAdded.value = false
+       emit('afterUpdate', d)
+       show.value = false
+     },
+@@ -183,6 +192,13 @@ function openQuickEntryModal() {
+   nextTick(() => (show.value = false))
+ }
+ 
++watch(show, (open) => {
++  if (!open && notesAdded.value) {
++    notesAdded.value = false
++    emit('afterUpdate', document.doc)
++  }
++})
++
+ watch(
+   () => document.doc,
+   async (_doc) => {
